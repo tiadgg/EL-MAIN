@@ -5,206 +5,248 @@ import folium
 from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 import time
-import sys
+import random
+from geopy.distance import great_circle
 
 # ==========================================
-# 1. CORE LOGIC: SIGNAL PROCESSING & ML
+# 1. CORE LOGIC: SIGNAL PROCESSING & DETECTION
+# (Based on App Explanation and Phase II Reports)
 # ==========================================
 class PotholeDetector:
     """
-    Implements the detection logic described in Phase II Report[cite: 350].
-    Uses vibration analysis (Z-axis accelerometer) to identify potholes[cite: 350].
+    Simulates the ML-based detection using vibration data (Z-axis accelerometer) 
+    as described in the project documentation[cite: 43, 417, 139].
     """
     def __init__(self):
-        # Thresholds based on typical accelerometer gravity (9.8 m/s^2)
-        self.POTHOLE_THRESHOLD = 3.5  # Variance threshold for "jolt"
-        self.GRAVITY = 9.8
+        # Thresholds tuned for detection severity based on vibration analysis [cite: 43, 61, 181]
+        self.LOW_THRESHOLD = 2.0   # Marks as Yellow/Green
+        self.HIGH_THRESHOLD = 3.5  # Marks as Red
 
     def extract_features(self, window):
         """
-        Extracts features (Mean, Std, RMS) from a sensor window as detailed in 
-        Technical Explanation[cite: 77].
+        Extracts features (Standard Deviation of acceleration) from a sensor window[cite: 164].
         """
-        # Remove gravity effect roughly by centering
+        # Focus on the dynamic part of Z-axis acceleration
         z_dynamic = window['az'] - window['az'].mean()
-        
         features = {
-            'std_dev': np.std(z_dynamic),
-            'peak_to_peak': np.ptp(z_dynamic),
-            'rms': np.sqrt(np.mean(z_dynamic**2)),
-            'max_jolt': np.max(np.abs(z_dynamic))
+            'std_dev': np.std(z_dynamic)
         }
         return features
 
     def detect(self, df_window):
         """
-        Returns probability of pothole (0.0 to 1.0) based on decision logic[cite: 93].
+        Calculates severity based on vibration magnitude.
+        Returns severity (0.0 to 1.0) and the corresponding color key (Red, Yellow, Green).
         """
         feats = self.extract_features(df_window)
-        
-        # Simple heuristic: High Standard Deviation = Rough Road/Pothole
-        severity = 0.0
-        if feats['std_dev'] > self.POTHOLE_THRESHOLD:
-            # Scale severity between 0.7 and 1.0 based on intensity
-            severity = min(1.0, 0.7 + (feats['std_dev'] - self.POTHOLE_THRESHOLD) / 10)
+        std_dev = feats['std_dev']
+
+        if std_dev >= self.HIGH_THRESHOLD:
+            # High Jolt: Red (Confirmed Pothole/Obstacle)
+            severity = 1.0
+            color = 'red'
+        elif std_dev >= self.LOW_THRESHOLD:
+            # Moderate Jolt: Yellow (Rough Patch/Minor Bumps)
+            severity = 0.6
+            color = 'yellow'
         else:
-            # Smooth road
-            severity = 0.1
+            # Low Jolt: Green (Smooth Road)
+            severity = 0.2
+            color = 'green'
             
-        return severity, feats
+        return severity, color, feats
 
 # ==========================================
-# 2. DATA SIMULATION (MOCK SENSORS)
+# 2. DATA SIMULATION FOR SPECIFIC BANGALORE ROADS
 # ==========================================
-def generate_trip_data(num_points=200):
+
+# Define Waypoints for MG Road -> Electronic City -> Mysore Road (Approximate Route)
+BANGALORE_WAYPOINTS = [
+    # MG Road (Start)
+    (12.9757, 77.6062),
+    (12.9734, 77.6042),
+    # Moving towards Electronic City
+    (12.9348, 77.6253),
+    # Electronic City Flyover/Road
+    (12.8529, 77.6603),
+    (12.8468, 77.6534),
+    # Towards Mysore Road
+    (12.9248, 77.5855),
+    # Mysore Road (End near NICE Road junction)
+    (12.9366, 77.5345),
+    (12.9405, 77.5256)
+]
+
+def generate_trip_data_bangalore(waypoints, pothole_density=0.15):
     """
-    Simulates GPS and Accelerometer data[cite: 417].
-    Generates a path starting from a dummy location (Bangalore).
+    Simulates GPS and Accelerometer data along the specified waypoints[cite: 36].
     """
-    # Start at Bangalore coordinates
-    lat, lon = 12.9716, 77.5946
-    
     data = []
     
-    for i in range(num_points):
-        # Move slightly to simulate driving
-        lat += np.random.normal(0, 0.0001)
-        lon += np.random.normal(0, 0.0001)
+    for i in range(len(waypoints) - 1):
+        start_lat, start_lon = waypoints[i]
+        end_lat, end_lon = waypoints[i+1]
         
-        # Simulate Accelerometer Z-axis (up/down)
-        az = np.random.normal(9.8, 0.5)
+        # Calculate distance and steps between waypoints
+        distance = great_circle((start_lat, start_lon), (end_lat, end_lon)).kilometers
+        num_steps = max(20, int(distance * 500)) # More steps for longer segments
+
+        lat_step = (end_lat - start_lat) / num_steps
+        lon_step = (end_lon - start_lon) / num_steps
         
-        # Inject random Potholes (Sudden spikes)
-        if np.random.rand() < 0.1:  # 10% chance of pothole
-            az += np.random.choice([-1, 1]) * np.random.uniform(2.5, 4.0)
+        # Interpolate between points
+        for j in range(num_steps):
+            lat = start_lat + lat_step * j + np.random.normal(0, 0.00001)
+            lon = start_lon + lon_step * j + np.random.normal(0, 0.00001)
             
-        data.append({
-            'timestamp': time.time() + i,
-            'lat': lat,
-            'lon': lon,
-            'az': az
-        })
-        
+            # --- Accelerometer Simulation ---
+            az = np.random.normal(9.8, 0.4) # Base smooth road noise
+            
+            # Inject varying jolts based on simulated road condition
+            if random.random() < pothole_density:
+                if random.random() < 0.3: 
+                    # Simulates a severe pothole (Red)
+                    az += np.random.choice([-1, 1]) * np.random.uniform(3.0, 5.0) 
+                else:
+                    # Simulates a minor bump (Yellow)
+                    az += np.random.choice([-1, 1]) * np.random.uniform(1.5, 2.5) 
+            
+            data.append({
+                'lat': lat,
+                'lon': lon,
+                'az': az
+            })
+            
     return pd.DataFrame(data)
 
 # ==========================================
-# 3. DASHBOARD & MAPPING UI
+# 3. STREAMLIT DASHBOARD & MAPPING UI
+# (Government Dashboard Access for Proactive Repair Planning) [cite: 428, 418, 26]
 # ==========================================
 def main():
-    st.set_page_config(page_title="Pothole Mapping System", layout="wide")
+    st.set_page_config(page_title="Bangalore Pothole Heatmap", layout="wide")
     
-    # Initialize session state for data storage
-    if 'data' not in st.session_state:
-        st.session_state['data'] = generate_trip_data(200)
+    # Initialize session state with data if not present
+    if 'bangalore_data' not in st.session_state:
+        st.session_state['bangalore_data'] = generate_trip_data_bangalore(BANGALORE_WAYPOINTS)
 
-    # Header based on Report Title
-    st.title("🚦 Pothole Mapping System - Dashboard")
-    st.markdown("""
-    **Phase-II Prototype Implementation** *Integrates Sensor Analysis, Detection Logic, and Interactive Mapping.* 
-    """)
+    st.title("🗺️ Real-time Pothole Mapping System - Bangalore Roads Dashboard")
+    st.markdown("---")
     
-    # Sidebar: Controls
-    st.sidebar.header("Control Panel")
-    data_source = st.sidebar.radio("Data Source", ["Simulate Live Trip", "Upload CSV"])
+    df = st.session_state['bangalore_data']
     
-    df = pd.DataFrame()
+    if st.sidebar.button("Regenerate Trip Data"):
+        st.session_state['bangalore_data'] = generate_trip_data_bangalore(BANGALORE_WAYPOINTS)
+        st.rerun() 
+    
+    st.sidebar.caption("Route: MG Road -> Electronic City Flyover -> Mysore Road")
 
-    # --- Data Acquisition Logic ---
-    if data_source == "Simulate Live Trip":
-        df = st.session_state['data']
-        if st.sidebar.button("Regenerate Trip Data"):
-             st.session_state['data'] = generate_trip_data(200)
-             # Rerun the script to apply changes
-             st.rerun() 
-        
-    elif data_source == "Upload CSV":
-        uploaded_file = st.sidebar.file_uploader("Upload Sensor Log (CSV)", type="csv")
-        if uploaded_file:
-            df = pd.read_csv(uploaded_file)
-        else:
-            st.info("Please upload a file to proceed with analysis.")
-            return # Exit if no file is uploaded
-
-    # --- Data Processing and Visualization Block ---
-    if not df.empty:
-        detector = PotholeDetector()
-        results = []
-        
-        # Sliding window analysis (Simulating the 1s window buffer [cite: 66])
-        window_size = 10 
+    # --- Data Processing ---
+    detector = PotholeDetector()
+    results = []
+    window_size = 10 
+    
+    with st.spinner("Processing sensor data and running ML inference..."):
         for i in range(0, len(df) - window_size, window_size):
             window = df.iloc[i:i+window_size]
-            severity, feats = detector.detect(window)
+            severity, color, feats = detector.detect(window)
             
-            # Use the location of the middle of the window
             center_idx = i + window_size // 2
             results.append({
                 'lat': df.iloc[center_idx]['lat'],
                 'lon': df.iloc[center_idx]['lon'],
                 'severity': severity,
+                'color': color,
                 'std_dev': feats['std_dev']
             })
             
-        results_df = pd.DataFrame(results)
+    results_df = pd.DataFrame(results)
+    
+    # --- Visualization ---
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        st.subheader("Interactive Road Condition Heatmap (Leaflet)")
         
-        # 3. Visualization
-        col1, col2 = st.columns([2, 1])
+        # Center the map near Central Bangalore
+        center_lat, center_lon = 12.95, 77.58 
         
-        with col1:
-            st.subheader("Interactive Pothole Map")
-            
-            # Center the map on the data's mean location
-            center_lat = df['lat'].mean() if not df.empty else 12.9716
-            center_lon = df['lon'].mean() if not df.empty else 77.5946
-            
-            m = folium.Map(location=[center_lat, center_lon], zoom_start=15)
-            
-            # Prepare data for the heatmap (lat, lon, weight/severity)
-            heat_data = results_df[['lat', 'lon', 'severity']].values.tolist()
-            
-            # Apply color mapping: High severity (Red), Low severity (Green)
-            HeatMap(
-                heat_data, 
-                radius=15, 
-                max_zoom=13, 
-                # This ensures the gradient goes from green (0) to red (1)
-                gradient={0.1: 'green', 0.5: 'yellow', 0.7: 'orange', 1.0: 'red'}
+        # FIX: Using "OpenStreetMap" as the default tile set resolves the Folium attribution error.
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="OpenStreetMap")
+        
+        # Prepare data for the heatmap: only severe and moderate bumps contribute heavily
+        heat_data_points = results_df[results_df['severity'] > 0.4][['lat', 'lon', 'severity']].values.tolist()
+        
+        # Heatmap layer for general road roughness/damage severity [cite: 427, 423]
+        HeatMap(
+            heat_data_points, 
+            radius=20, 
+            max_zoom=13, 
+            # Custom gradient reflecting the severity: Green (smooth) -> Yellow (moderate) -> Red (severe)
+            gradient={0.0: 'green', 0.5: 'yellow', 0.8: 'red'}
+        ).add_to(m)
+        
+        
+        # Add distinct Circle Markers for high severity points (Red and Yellow)
+        potholes = results_df[results_df['color'] == 'red']
+        rough_patches = results_df[results_df['color'] == 'yellow']
+
+        for _, row in rough_patches.iterrows():
+            folium.CircleMarker(
+                location=[row['lat'], row['lon']],
+                radius=3,
+                color="yellow",
+                fill=True,
+                fillOpacity=0.7
             ).add_to(m)
-            
-            # Add specific markers for confirmed potholes
-            potholes = results_df[results_df['severity'] > 0.6]
-            for _, row in potholes.iterrows():
-                folium.CircleMarker(
-                    location=[row['lat'], row['lon']],
-                    radius=5,
-                    color="#FF4500", # Red-Orange
-                    fill=True,
-                    popup=f"Pothole Detected! Severity: {row['severity']:.2f}"
-                ).add_to(m)
-                
-            st_folium(m, width=800, height=500)
-            
-            st.markdown("---")
-            st.markdown("Heatmap color key: **Green** (Smooth Road) → **Yellow/Orange** (Moderate Roughness) → **Red** (Confirmed Pothole)")
-            
 
+        for _, row in potholes.iterrows():
+            folium.CircleMarker(
+                location=[row['lat'], row['lon']],
+                radius=6,
+                color="#FF0000", # Pure Red
+                fill=True,
+                fillOpacity=1.0,
+                popup=f"Severe Pothole/Obstacle! (StdDev: {row['std_dev']:.2f})"
+            ).add_to(m)
 
-        with col2:
-            st.subheader("Trip Statistics")
-            total_potholes = len(potholes)
-            avg_severity = results_df['severity'].mean()
-            
-            st.metric("Potholes Detected", total_potholes, delta_color="inverse")
-            st.metric("Average Road Roughness", f"{avg_severity:.2}")
-            
-            st.subheader("Sensor Analysis (Z-Axis)")
-            st.line_chart(df['az'].head(100)) # Show raw sensor data for visualization
-            st.caption("Raw accelerometer data showing vertical jolts (spikes indicate potholes).")
+        st_folium(m, width=900, height=550)
+        
+        st.markdown("""
+        **Color Legend (Road Obstacle/Pothole Density):**
+        * 🔴 **Red:** Too many potholes and obstacles (High Severity)
+        * 🟡 **Yellow:** Little lesser (Moderate Roughness)
+        * 🟢 **Green:** Even lesser (Smooth Road)
+        """)
 
-    else:
-        # This message should ideally never be reached on the first run now.
-        st.error("Error: Simulation data could not be generated. Check environment dependencies.")
-
+    with col2:
+        st.subheader("Trip Statistics (for Repair Planning) [cite: 418]")
+        total_points = len(results_df)
+        red_count = len(potholes)
+        yellow_count = len(rough_patches)
+        green_count = total_points - red_count - yellow_count
+        
+        st.metric("Total Data Points", total_points)
+        st.metric("Critical Potholes (Red)", red_count, delta_color="inverse")
+        st.metric("Rough Patches (Yellow)", yellow_count, delta_color="off")
+        
+        st.subheader("Road Condition Breakdown")
+        
+        st.progress(red_count / total_points, text=f"Red Zones ({red_count/total_points:.1%})")
+        st.progress(yellow_count / total_points, text=f"Yellow Zones ({yellow_count/total_points:.1%})")
+        st.progress(green_count / total_points, text=f"Green Zones ({green_count/total_points:.1%})")
+        
+        st.subheader("Detection Method Summary")
+        st.markdown(
+            """
+            The system leverages crowd-sourced smartphone sensor data[cite: 414].
+            Detection is achieved through **vibration-based analysis** using the accelerometer[cite: 43, 421].
+            This process involves:
+            1. Buffering data in time-series windows (e.g., 1s window)[cite: 153].
+            2. Extracting features (e.g., Standard Deviation)[cite: 164].
+            3. Applying ML logic to classify severity (Red/Yellow/Green)[cite: 184].
+            """
+        )
 
 if __name__ == "__main__":
     main()
